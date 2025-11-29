@@ -62,7 +62,12 @@ def get_csv_path(config: ScraperConfig, product_type: ProductType) -> Path:
     return config.data_dir / "metadata" / csv_names[product_type]
 
 
-async def scrape_metadata(config: ScraperConfig, product_type: ProductType) -> list:
+async def scrape_metadata(
+    config: ScraperConfig,
+    product_type: ProductType,
+    start_page: int | None = None,
+    end_page: int | None = None,
+) -> list:
     """Scrape metadata only (no downloads) for a product type."""
     scraper_class = get_scraper_class(product_type)
     all_products = []
@@ -71,12 +76,14 @@ async def scrape_metadata(config: ScraperConfig, product_type: ProductType) -> l
 
     async with scraper_class(config) as scraper:
         total_pages = await scraper.get_total_pages()
-        print(f"  Found {total_pages} pages")
+        actual_start = start_page or 1
+        actual_end = end_page or total_pages
+        print(f"  Scraping pages {actual_start} to {actual_end} (of {total_pages} total)")
 
-        async for page, products in scraper.scrape_all_pages(1, total_pages):
+        async for page, products in scraper.scrape_all_pages(actual_start, actual_end):
             if products:
                 all_products.extend(products)
-            print(f"  Page {page}/{total_pages} ({len(all_products)} products)")
+            print(f"  Page {page}/{actual_end} ({len(all_products)} products)")
 
     print(f"  Total: {len(all_products)} products")
     return all_products
@@ -157,6 +164,8 @@ async def process_product_type(
     concurrent: int = 10,
     rate_limit: float = 10.0,
     metadata_only: bool = False,
+    start_page: int | None = None,
+    end_page: int | None = None,
     r2_uploader=None,
 ) -> tuple[int, int]:
     """Process a single product type: scrape, compare, download delta."""
@@ -167,7 +176,7 @@ async def process_product_type(
     print(f"\n{product_type.value}: {len(existing_urls)} existing records")
 
     # Scrape current metadata
-    current_products = await scrape_metadata(config, product_type)
+    current_products = await scrape_metadata(config, product_type, start_page, end_page)
 
     # Find new products
     new_products = [p for p in current_products if p.document_url not in existing_urls]
@@ -252,7 +261,7 @@ async def main(
         try:
             products, new = await process_product_type(
                 config, csv_writer, file_manager, product_type, storage,
-                concurrent, rate_limit, metadata_only, r2_uploader
+                concurrent, rate_limit, metadata_only, start_page, end_page, r2_uploader
             )
             total_products += products
             total_new += new
