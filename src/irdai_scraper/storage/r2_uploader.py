@@ -43,6 +43,7 @@ class R2Uploader:
             endpoint_url=f"https://{self.account_id}.r2.cloudflarestorage.com",
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
+            region_name="auto",  # R2 uses 'auto' for region
             config=Config(signature_version="s3v4"),
         )
 
