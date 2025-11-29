@@ -22,6 +22,11 @@ from .storage.state import StateManager
 app = typer.Typer(name="irdai-scraper", help="IRDAI Insurance Products Scraper")
 console = Console()
 
+# Storage options
+STORAGE_FILESYSTEM = "filesystem"
+STORAGE_R2 = "r2"
+STORAGE_BOTH = "both"
+
 
 def get_scraper_class(product_type: ProductType):
     """Get scraper class for product type."""
@@ -44,6 +49,8 @@ async def scrape_product_type(
     metadata_only: bool,
     start_page: Optional[int],
     end_page: Optional[int],
+    storage: str = STORAGE_FILESYSTEM,
+    r2_uploader=None,
 ) -> tuple[int, int, int]:
     """Scrape a single product type.
 
@@ -104,10 +111,32 @@ async def scrape_product_type(
                                     if result.success:
                                         state_manager.mark_download_completed(result.url)
                                         files_downloaded += 1
-                                        # Update product with local file path
+                                        # Update product with local file path and/or R2 URL
                                         for product in products:
                                             if product.document_url == result.url and result.file_path:
-                                                product.local_file_path = str(result.file_path)
+                                                # Set local path if using filesystem storage
+                                                if storage in (STORAGE_FILESYSTEM, STORAGE_BOTH):
+                                                    product.local_file_path = str(result.file_path)
+
+                                                # Upload to R2 if using R2 storage
+                                                if storage in (STORAGE_R2, STORAGE_BOTH) and r2_uploader:
+                                                    try:
+                                                        # Generate R2 key from relative path
+                                                        rel_path = result.file_path.relative_to(
+                                                            config.data_dir / "downloads" / product_type.value
+                                                        )
+                                                        r2_key = r2_uploader.generate_r2_key(
+                                                            product_type.value, str(rel_path)
+                                                        )
+                                                        r2_url = r2_uploader.upload_file(result.file_path, r2_key)
+                                                        product.r2_url = r2_url
+
+                                                        # Delete local file if R2-only storage
+                                                        if storage == STORAGE_R2:
+                                                            result.file_path.unlink(missing_ok=True)
+                                                            product.local_file_path = None
+                                                    except Exception as e:
+                                                        console.print(f"[red]R2 upload failed: {e}[/red]")
                                                 break
                                     else:
                                         state_manager.mark_download_failed(
@@ -170,15 +199,41 @@ def scrape(
         "--end-page",
         help="Override end page (useful for testing)",
     ),
+    storage: str = typer.Option(
+        STORAGE_FILESYSTEM,
+        "--storage",
+        "-s",
+        help="Storage backend: filesystem, r2, or both",
+    ),
 ):
     """Scrape IRDAI insurance products."""
     console.print("[bold]IRDAI Insurance Products Scraper[/bold]")
     console.print("[yellow]Warning: SSL verification disabled (IRDAI certificate issues)[/yellow]\n")
 
+    # Validate storage option
+    if storage not in (STORAGE_FILESYSTEM, STORAGE_R2, STORAGE_BOTH):
+        console.print(f"[red]Invalid storage option: {storage}[/red]")
+        console.print("Valid options: filesystem, r2, both")
+        raise typer.Exit(1)
+
     config = ScraperConfig(data_dir=output_dir)
     state_manager = StateManager(config)
     csv_writer = CSVWriter(config)
     file_manager = FileManager(config)
+
+    # Initialize R2 uploader if needed
+    r2_uploader = None
+    if storage in (STORAGE_R2, STORAGE_BOTH):
+        try:
+            from .storage.r2_uploader import R2Uploader
+            r2_uploader = R2Uploader()
+            console.print(f"[green]R2 storage enabled (bucket: {r2_uploader.bucket})[/green]")
+        except ValueError as e:
+            console.print(f"[red]R2 configuration error: {e}[/red]")
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]Failed to initialize R2: {e}[/red]")
+            raise typer.Exit(1)
 
     # Reset state if no-resume
     if no_resume:
@@ -215,6 +270,8 @@ def scrape(
                 metadata_only,
                 start_page,
                 end_page,
+                storage,
+                r2_uploader,
             )
             total_products += products
             total_downloaded += downloaded

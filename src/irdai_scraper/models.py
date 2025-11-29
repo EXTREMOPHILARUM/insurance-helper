@@ -15,6 +15,7 @@ class InsuranceProduct(BaseModel):
     document_url: Optional[str] = None
     document_filename: Optional[str] = None
     local_file_path: Optional[str] = None
+    r2_url: Optional[str] = None
     scraped_at: datetime = Field(default_factory=datetime.utcnow)
 
 
