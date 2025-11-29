@@ -23,6 +23,11 @@ class LifeProductListScraper(BaseScraper):
         if len(cells) < 5:
             return None
 
+        # Validate short_description field is not empty (skip placeholder/empty rows)
+        short_description = self.parser.clean_cell_text(cells[2])
+        if not short_description:
+            return None
+
         # Extract document URL from the last cell
         doc_url, doc_filename = self.parser.extract_document_link(cells[-1])
 
@@ -37,7 +42,7 @@ class LifeProductListScraper(BaseScraper):
         return LifeProductListItem(
             product_type=ProductType.LIFE_LIST.value,
             archive_status=self.parser.clean_cell_text(cells[1]),
-            short_description=self.parser.clean_cell_text(cells[2]),
+            short_description=short_description,
             last_updated=self.parser.clean_cell_text(cells[3]) or None,
             sub_title=self.parser.clean_cell_text(cells[4]) or None,
             document_url=doc_url,

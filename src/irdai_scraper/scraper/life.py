@@ -23,6 +23,11 @@ class LifeInsuranceScraper(BaseScraper):
         if len(cells) < 13:
             return None
 
+        # Validate UIN field is not empty (skip placeholder/empty rows)
+        uin = self.parser.clean_cell_text(cells[5])
+        if not uin:
+            return None
+
         # Extract document URL from the last cell (download column)
         doc_url, doc_filename = self.parser.extract_document_link(cells[-1])
 
@@ -48,7 +53,7 @@ class LifeInsuranceScraper(BaseScraper):
             financial_year=self.parser.clean_cell_text(cells[2]),
             insurer=self.parser.clean_cell_text(cells[3]),
             product_name=self.parser.clean_cell_text(cells[4]),
-            uin=self.parser.clean_cell_text(cells[5]),
+            uin=uin,
             type_of_product=self.parser.clean_cell_text(cells[6]),
             launch_modification_date=self.parser.clean_cell_text(cells[7]) or None,
             closing_withdrawal_date=self.parser.clean_cell_text(cells[8]) or None,

@@ -23,6 +23,11 @@ class HealthInsuranceScraper(BaseScraper):
         if len(cells) < 8:
             return None
 
+        # Validate UIN field is not empty (skip placeholder/empty rows)
+        uin = self.parser.clean_cell_text(cells[4])
+        if not uin:
+            return None
+
         # Extract document URL from the documents cell (second to last)
         doc_url, doc_filename = self.parser.extract_document_link(cells[-2])
         if not doc_url:
@@ -45,7 +50,7 @@ class HealthInsuranceScraper(BaseScraper):
             archive_status=self.parser.clean_cell_text(cells[1]),
             financial_year=self.parser.clean_cell_text(cells[2]),
             insurer=self.parser.clean_cell_text(cells[3]),
-            uin=self.parser.clean_cell_text(cells[4]),
+            uin=uin,
             product_name=self.parser.clean_cell_text(cells[5]),
             date_of_approval=self.parser.clean_cell_text(cells[6]) or None,
             type_of_product=self.parser.clean_cell_text(cells[8]) if len(cells) > 8 else "",
