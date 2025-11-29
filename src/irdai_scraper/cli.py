@@ -1,6 +1,7 @@
 """CLI interface for IRDAI scraper."""
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +21,15 @@ from .storage.csv_writer import CSVWriter
 from .storage.state import StateManager
 
 app = typer.Typer(name="irdai-scraper", help="IRDAI Insurance Products Scraper")
-console = Console()
+
+# Detect CI environment for simpler logging
+IS_CI = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+
+# Use simple console in CI (no colors, no fancy formatting)
+if IS_CI:
+    console = Console(force_terminal=False, no_color=True)
+else:
+    console = Console()
 
 # Storage options
 STORAGE_FILESYSTEM = "filesystem"
@@ -46,6 +55,7 @@ async def scrape_product_type(
     csv_writer: CSVWriter,
     file_manager: FileManager,
     concurrent_downloads: int,
+    rate_limit: float,
     metadata_only: bool,
     start_page: Optional[int],
     end_page: Optional[int],
@@ -66,26 +76,21 @@ async def scrape_product_type(
     session = state_manager.start_session(product_type)
     resume_page = start_page or (session.last_completed_page + 1)
 
-    console.print(f"\n[bold blue]Scraping {product_type.value}...[/bold blue]")
-
-    if resume_page > 1:
-        console.print(f"[yellow]Resuming from page {resume_page}[/yellow]")
+    if IS_CI:
+        print(f"\nScraping {product_type.value}...")
+        if resume_page > 1:
+            print(f"Resuming from page {resume_page}")
+    else:
+        console.print(f"\n[bold blue]Scraping {product_type.value}...[/bold blue]")
+        if resume_page > 1:
+            console.print(f"[yellow]Resuming from page {resume_page}[/yellow]")
 
     async with scraper_class(config) as scraper:
         total_pages = end_page or await scraper.get_total_pages()
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console,
-        ) as progress:
-            page_task = progress.add_task(
-                f"[cyan]Pages ({product_type.value})",
-                total=total_pages - resume_page + 1,
-            )
-
+        if IS_CI:
+            # Simple progress for CI
+            print(f"Total pages: {total_pages}")
             async for page, products in scraper.scrape_all_pages(resume_page, total_pages):
                 if products:
                     # Download files if not metadata only
@@ -103,7 +108,7 @@ async def scrape_product_type(
 
                         if tasks:
                             async with AsyncFileDownloader(
-                                config, max_concurrent=concurrent_downloads
+                                config, max_concurrent=concurrent_downloads, rate_limit=rate_limit
                             ) as downloader:
                                 results = await downloader.download_batch(tasks)
 
@@ -111,17 +116,12 @@ async def scrape_product_type(
                                     if result.success:
                                         state_manager.mark_download_completed(result.url)
                                         files_downloaded += 1
-                                        # Update product with local file path and/or R2 URL
                                         for product in products:
                                             if product.document_url == result.url and result.file_path:
-                                                # Set local path if using filesystem storage
                                                 if storage in (STORAGE_FILESYSTEM, STORAGE_BOTH):
                                                     product.local_file_path = str(result.file_path)
-
-                                                # Upload to R2 if using R2 storage
                                                 if storage in (STORAGE_R2, STORAGE_BOTH) and r2_uploader:
                                                     try:
-                                                        # Generate R2 key from relative path
                                                         rel_path = result.file_path.relative_to(
                                                             config.data_dir / "downloads" / product_type.value
                                                         )
@@ -130,13 +130,11 @@ async def scrape_product_type(
                                                         )
                                                         r2_url = r2_uploader.upload_file(result.file_path, r2_key)
                                                         product.r2_url = r2_url
-
-                                                        # Delete local file if R2-only storage
                                                         if storage == STORAGE_R2:
                                                             result.file_path.unlink(missing_ok=True)
                                                             product.local_file_path = None
                                                     except Exception as e:
-                                                        console.print(f"[red]R2 upload failed: {e}[/red]")
+                                                        print(f"R2 upload failed: {e}")
                                                 break
                                     else:
                                         state_manager.mark_download_failed(
@@ -144,13 +142,92 @@ async def scrape_product_type(
                                         )
                                         files_failed += 1
 
-                    # Write to CSV (after downloads so local_file_path is set)
                     csv_writer.write_products(products, product_type, append=True)
                     products_scraped += len(products)
 
-                # Update progress
                 state_manager.update_page_progress(product_type, page)
-                progress.advance(page_task)
+                # Print progress every 5 pages in CI
+                if page % 5 == 0 or page == total_pages:
+                    print(f"  Page {page}/{total_pages} - {products_scraped} products, {files_downloaded} downloads")
+        else:
+            # Rich progress for interactive terminal
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=console,
+            ) as progress:
+                page_task = progress.add_task(
+                    f"[cyan]Pages ({product_type.value})",
+                    total=total_pages - resume_page + 1,
+                )
+
+                async for page, products in scraper.scrape_all_pages(resume_page, total_pages):
+                    if products:
+                        # Download files if not metadata only
+                        if not metadata_only:
+                            tasks = []
+                            url_to_task: dict[str, any] = {}
+                            for product in products:
+                                if product.document_url and not state_manager.is_download_completed(
+                                    product.document_url
+                                ):
+                                    task = file_manager.create_download_task(product, product_type)
+                                    if task:
+                                        tasks.append(task)
+                                        url_to_task[product.document_url] = task
+
+                            if tasks:
+                                async with AsyncFileDownloader(
+                                    config, max_concurrent=concurrent_downloads, rate_limit=rate_limit
+                                ) as downloader:
+                                    results = await downloader.download_batch(tasks)
+
+                                    for result in results:
+                                        if result.success:
+                                            state_manager.mark_download_completed(result.url)
+                                            files_downloaded += 1
+                                            # Update product with local file path and/or R2 URL
+                                            for product in products:
+                                                if product.document_url == result.url and result.file_path:
+                                                    # Set local path if using filesystem storage
+                                                    if storage in (STORAGE_FILESYSTEM, STORAGE_BOTH):
+                                                        product.local_file_path = str(result.file_path)
+
+                                                    # Upload to R2 if using R2 storage
+                                                    if storage in (STORAGE_R2, STORAGE_BOTH) and r2_uploader:
+                                                        try:
+                                                            # Generate R2 key from relative path
+                                                            rel_path = result.file_path.relative_to(
+                                                                config.data_dir / "downloads" / product_type.value
+                                                            )
+                                                            r2_key = r2_uploader.generate_r2_key(
+                                                                product_type.value, str(rel_path)
+                                                            )
+                                                            r2_url = r2_uploader.upload_file(result.file_path, r2_key)
+                                                            product.r2_url = r2_url
+
+                                                            # Delete local file if R2-only storage
+                                                            if storage == STORAGE_R2:
+                                                                result.file_path.unlink(missing_ok=True)
+                                                                product.local_file_path = None
+                                                        except Exception as e:
+                                                            console.print(f"[red]R2 upload failed: {e}[/red]")
+                                                    break
+                                        else:
+                                            state_manager.mark_download_failed(
+                                                result.url, result.error or "Unknown error"
+                                            )
+                                            files_failed += 1
+
+                        # Write to CSV (after downloads so local_file_path is set)
+                        csv_writer.write_products(products, product_type, append=True)
+                        products_scraped += len(products)
+
+                    # Update progress
+                    state_manager.update_page_progress(product_type, page)
+                    progress.advance(page_task)
 
     # Mark session complete
     state_manager.complete_session(product_type, products_scraped)
@@ -177,6 +254,12 @@ def scrape(
         "--concurrent",
         "-c",
         help="Maximum concurrent downloads",
+    ),
+    rate_limit: float = typer.Option(
+        10.0,
+        "--rate-limit",
+        "-r",
+        help="Rate limit: requests per second (0 = no limit)",
     ),
     no_resume: bool = typer.Option(
         False,
@@ -267,6 +350,7 @@ def scrape(
                 csv_writer,
                 file_manager,
                 concurrent_downloads,
+                rate_limit,
                 metadata_only,
                 start_page,
                 end_page,
@@ -280,14 +364,21 @@ def scrape(
     asyncio.run(run_scraping())
 
     # Print summary
-    console.print("\n[bold green]Scraping Complete![/bold green]")
-    table = Table(title="Summary")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_row("Products Scraped", str(total_products))
-    table.add_row("Files Downloaded", str(total_downloaded))
-    table.add_row("Files Failed", str(total_failed))
-    console.print(table)
+    if IS_CI:
+        print("\n" + "=" * 40)
+        print("Scraping Complete!")
+        print(f"  Products Scraped: {total_products}")
+        print(f"  Files Downloaded: {total_downloaded}")
+        print(f"  Files Failed: {total_failed}")
+    else:
+        console.print("\n[bold green]Scraping Complete![/bold green]")
+        table = Table(title="Summary")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Products Scraped", str(total_products))
+        table.add_row("Files Downloaded", str(total_downloaded))
+        table.add_row("Files Failed", str(total_failed))
+        console.print(table)
 
 
 @app.command()

@@ -89,6 +89,8 @@ async def download_new_files(
     product_type: ProductType,
     new_products: list,
     storage: str,
+    concurrent: int = 10,
+    rate_limit: float = 10.0,
     r2_uploader=None,
 ) -> list:
     """Download files for new products and optionally upload to R2."""
@@ -110,7 +112,7 @@ async def download_new_files(
 
     # Download files
     download_tasks = [t[1] for t in tasks]
-    async with AsyncFileDownloader(config, max_concurrent=20) as downloader:
+    async with AsyncFileDownloader(config, max_concurrent=concurrent, rate_limit=rate_limit) as downloader:
         results = await downloader.download_batch(download_tasks)
 
     # Process results
@@ -153,6 +155,9 @@ async def process_product_type(
     file_manager: FileManager,
     product_type: ProductType,
     storage: str,
+    concurrent: int = 10,
+    rate_limit: float = 10.0,
+    metadata_only: bool = False,
     r2_uploader=None,
 ) -> tuple[int, int]:
     """Process a single product type: scrape, compare, download delta."""
@@ -173,10 +178,13 @@ async def process_product_type(
         print("  No new products to download")
         return len(current_products), 0
 
-    # Download new files
-    new_products = await download_new_files(
-        config, file_manager, product_type, new_products, storage, r2_uploader
-    )
+    # Download new files (unless metadata only)
+    if not metadata_only:
+        new_products = await download_new_files(
+            config, file_manager, product_type, new_products, storage, concurrent, rate_limit, r2_uploader
+        )
+    else:
+        print("  Metadata only mode - skipping downloads")
 
     # Append new products to CSV
     if new_products:
@@ -186,11 +194,24 @@ async def process_product_type(
     return len(current_products), len(new_products)
 
 
-async def main(storage: str = "r2"):
+async def main(
+    storage: str = "r2",
+    product_type_filter: str = "all",
+    concurrent: int = 10,
+    rate_limit: float = 10.0,
+    metadata_only: bool = False,
+    start_page: int | None = None,
+    end_page: int | None = None,
+):
     """Main entry point for delta download."""
     print("IRDAI Delta Download Script")
     print("=" * 40)
     print(f"Storage: {storage}")
+    print(f"Product type: {product_type_filter}")
+    print(f"Concurrent: {concurrent}")
+    print(f"Rate limit: {rate_limit} req/s")
+    if metadata_only:
+        print("Mode: Metadata only (no downloads)")
 
     config = ScraperConfig()
     csv_writer = CSVWriter(config)
@@ -198,7 +219,7 @@ async def main(storage: str = "r2"):
 
     # Initialize R2 if needed
     r2_uploader = None
-    if storage in ("r2", "both"):
+    if storage in ("r2", "both") and not metadata_only:
         try:
             from irdai_scraper.storage.r2_uploader import R2Uploader
             r2_uploader = R2Uploader()
@@ -213,14 +234,26 @@ async def main(storage: str = "r2"):
     (config.data_dir / "metadata").mkdir(parents=True, exist_ok=True)
     (config.data_dir / "downloads").mkdir(parents=True, exist_ok=True)
 
+    # Determine which product types to process
+    if product_type_filter == "all":
+        types_to_process = list(ProductType)
+    else:
+        try:
+            types_to_process = [ProductType(product_type_filter)]
+        except ValueError:
+            print(f"Error: Invalid product type '{product_type_filter}'")
+            print("Valid options: life, life_list, nonlife, health, all")
+            return
+
     # Process each product type
     total_products = 0
     total_new = 0
 
-    for product_type in ProductType:
+    for product_type in types_to_process:
         try:
             products, new = await process_product_type(
-                config, csv_writer, file_manager, product_type, storage, r2_uploader
+                config, csv_writer, file_manager, product_type, storage,
+                concurrent, rate_limit, metadata_only, r2_uploader
             )
             total_products += products
             total_new += new
@@ -244,6 +277,50 @@ if __name__ == "__main__":
         choices=["filesystem", "r2", "both"],
         help="Storage backend (default: r2)",
     )
+    parser.add_argument(
+        "--type", "-t",
+        dest="product_type",
+        default="all",
+        choices=["all", "life", "life_list", "nonlife", "health"],
+        help="Product type to scrape (default: all)",
+    )
+    parser.add_argument(
+        "--concurrent", "-c",
+        type=int,
+        default=10,
+        help="Maximum concurrent downloads (default: 10)",
+    )
+    parser.add_argument(
+        "--rate-limit", "-r",
+        type=float,
+        default=10.0,
+        help="Rate limit: requests per second, 0 = no limit (default: 10)",
+    )
+    parser.add_argument(
+        "--metadata-only", "-m",
+        action="store_true",
+        help="Only scrape metadata, don't download files",
+    )
+    parser.add_argument(
+        "--start-page",
+        type=int,
+        default=None,
+        help="Start page (optional)",
+    )
+    parser.add_argument(
+        "--end-page",
+        type=int,
+        default=None,
+        help="End page (optional)",
+    )
     args = parser.parse_args()
 
-    asyncio.run(main(args.storage))
+    asyncio.run(main(
+        storage=args.storage,
+        product_type_filter=args.product_type,
+        concurrent=args.concurrent,
+        rate_limit=args.rate_limit,
+        metadata_only=args.metadata_only,
+        start_page=args.start_page,
+        end_page=args.end_page,
+    ))

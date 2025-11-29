@@ -6,6 +6,17 @@ on:
     - cron: '0 2 1 * *'
   workflow_dispatch:
     inputs:
+      product_type:
+        description: 'Product type to scrape'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - life
+          - life_list
+          - nonlife
+          - health
       storage:
         description: 'Storage backend'
         required: false
@@ -15,6 +26,29 @@ on:
           - r2
           - filesystem
           - both
+      concurrent:
+        description: 'Concurrent downloads'
+        required: false
+        default: '10'
+        type: string
+      rate_limit:
+        description: 'Rate limit (requests per second, 0 = no limit)'
+        required: false
+        default: '10'
+        type: string
+      metadata_only:
+        description: 'Metadata only (no downloads)'
+        required: false
+        default: false
+        type: boolean
+      start_page:
+        description: 'Start page (optional)'
+        required: false
+        type: string
+      end_page:
+        description: 'End page (optional)'
+        required: false
+        type: string
 
 env:
   R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -47,8 +81,35 @@ jobs:
       - name: Run delta scraper
         run: |
           STORAGE="${{ github.event.inputs.storage || 'r2' }}"
-          echo "Using storage: $STORAGE"
-          uv run python scripts/delta_download.py --storage "$STORAGE"
+          PRODUCT_TYPE="${{ github.event.inputs.product_type || 'all' }}"
+          CONCURRENT="${{ github.event.inputs.concurrent || '10' }}"
+          RATE_LIMIT="${{ github.event.inputs.rate_limit || '10' }}"
+          METADATA_ONLY="${{ github.event.inputs.metadata_only || 'false' }}"
+          START_PAGE="${{ github.event.inputs.start_page || '' }}"
+          END_PAGE="${{ github.event.inputs.end_page || '' }}"
+
+          echo "Storage: $STORAGE"
+          echo "Product type: $PRODUCT_TYPE"
+          echo "Concurrent: $CONCURRENT"
+          echo "Rate limit: $RATE_LIMIT"
+
+          # Build command with optional args
+          CMD="uv run python3 scripts/delta_download.py --storage $STORAGE --type $PRODUCT_TYPE --concurrent $CONCURRENT --rate-limit $RATE_LIMIT"
+
+          if [ "$METADATA_ONLY" = "true" ]; then
+            CMD="$CMD --metadata-only"
+          fi
+
+          if [ -n "$START_PAGE" ]; then
+            CMD="$CMD --start-page $START_PAGE"
+          fi
+
+          if [ -n "$END_PAGE" ]; then
+            CMD="$CMD --end-page $END_PAGE"
+          fi
+
+          echo "Running: $CMD"
+          $CMD
 
       - name: Configure Git
         run: |

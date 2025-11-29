@@ -36,6 +36,7 @@ class ScraperConfig:
     page_timeout: int = 60
     retry_attempts: int = 3
     retry_delay: float = 2.0
+    rate_limit: float = 10.0  # requests per second (0 = no limit)
     verify_ssl: bool = False  # IRDAI has certificate issues
     data_dir: Path = field(default_factory=lambda: Path("data"))
     user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
