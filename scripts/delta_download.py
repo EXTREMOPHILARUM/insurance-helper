@@ -76,8 +76,7 @@ async def scrape_metadata(config: ScraperConfig, product_type: ProductType) -> l
         async for page, products in scraper.scrape_all_pages(1, total_pages):
             if products:
                 all_products.extend(products)
-            if page % 10 == 0:
-                print(f"  Page {page}/{total_pages} ({len(all_products)} products)")
+            print(f"  Page {page}/{total_pages} ({len(all_products)} products)")
 
     print(f"  Total: {len(all_products)} products")
     return all_products

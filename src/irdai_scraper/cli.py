@@ -146,9 +146,7 @@ async def scrape_product_type(
                     products_scraped += len(products)
 
                 state_manager.update_page_progress(product_type, page)
-                # Print progress every 5 pages in CI
-                if page % 5 == 0 or page == total_pages:
-                    print(f"  Page {page}/{total_pages} - {products_scraped} products, {files_downloaded} downloads")
+                print(f"  Page {page}/{total_pages} - {products_scraped} products, {files_downloaded} downloads")
         else:
             # Rich progress for interactive terminal
             with Progress(
