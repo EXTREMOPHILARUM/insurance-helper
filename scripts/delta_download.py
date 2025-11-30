@@ -118,17 +118,23 @@ async def download_new_files(
 
     # Download files
     download_tasks = [t[1] for t in tasks]
+    print(f"  Starting {len(download_tasks)} downloads (concurrent={concurrent}, rate={rate_limit}/s)...")
+
     async with AsyncFileDownloader(config, max_concurrent=concurrent, rate_limit=rate_limit) as downloader:
-        results = await downloader.download_batch(download_tasks)
+        results = await downloader.download_batch(
+            download_tasks,
+            progress_callback=lambda done, total, url: print(f"  [{done}/{total}] Downloaded") if done % 50 == 0 or done == total else None
+        )
 
     # Process results
     url_to_result = {r.url: r for r in results}
     success_count = 0
     fail_count = 0
+    upload_count = 0
 
     for product, task in tasks:
         result = url_to_result.get(product.document_url)
-        if result and result.success and result.file_path:
+        if result and result.success and result.file_path and result.file_path.exists():
             success_count += 1
             product.local_file_path = str(result.file_path)
 
@@ -141,6 +147,7 @@ async def download_new_files(
                     r2_key = r2_uploader.generate_r2_key(product_type.value, str(rel_path))
                     r2_url = r2_uploader.upload_file(result.file_path, r2_key)
                     product.r2_url = r2_url
+                    upload_count += 1
 
                     # Delete local file if R2-only
                     if storage == "r2":
@@ -150,8 +157,10 @@ async def download_new_files(
                     print(f"  R2 upload failed for {product.document_url}: {e}")
         else:
             fail_count += 1
+            if result and result.error:
+                print(f"  Download failed: {result.error[:100]}")
 
-    print(f"  Downloaded: {success_count}, Failed: {fail_count}")
+    print(f"  Downloaded: {success_count}, Failed: {fail_count}, R2 uploaded: {upload_count}")
     return new_products
 
 
