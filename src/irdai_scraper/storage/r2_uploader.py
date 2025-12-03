@@ -62,15 +62,19 @@ class R2Uploader:
         """Set custom public URL base (e.g., custom domain)."""
         self._public_url_base = url.rstrip("/")
 
-    def upload_file(self, local_path: Path, r2_key: str) -> str:
+    def upload_file(self, local_path: Path, r2_key: str, verify: bool = True) -> str:
         """Upload a file to R2 and return the public URL.
 
         Args:
             local_path: Path to local file
             r2_key: Key (path) in R2 bucket
+            verify: Verify file exists after upload
 
         Returns:
             Public URL of uploaded file
+
+        Raises:
+            RuntimeError: If verification fails
         """
         self.client.upload_file(
             str(local_path),
@@ -78,6 +82,10 @@ class R2Uploader:
             r2_key,
             ExtraArgs={"ContentType": self._get_content_type(local_path)},
         )
+
+        if verify and not self.file_exists(r2_key):
+            raise RuntimeError(f"Upload verification failed: {r2_key}")
+
         return f"{self.public_url_base}/{r2_key}"
 
     def upload_fileobj(self, fileobj, r2_key: str, content_type: str = "application/octet-stream") -> str:
